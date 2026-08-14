@@ -13,7 +13,7 @@ announced as text for screen readers.
 
 ## Running it
 
-Open [`hurdle.html`](./hurdle.html) directly in a browser — no build step or
+Open [`index.html`](../index.html) directly in a browser — no build step or
 server required.
 
 ## Controls
