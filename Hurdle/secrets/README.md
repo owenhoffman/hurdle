@@ -13,8 +13,8 @@ announced as text for screen readers.
 
 ## Running it
 
-Open [`echole (2).html`](./echole%20%282%29.html) directly in a browser — no
-build step or server required.
+Open [`hurdle.html`](./hurdle.html) directly in a browser — no build step or
+server required.
 
 ## Controls
 
