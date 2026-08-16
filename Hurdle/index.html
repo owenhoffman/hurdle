@@ -51,17 +51,21 @@ function pickRandomFrom(arr){ return arr[Math.floor(Math.random() * arr.length)]
 function buildLevelWords(){
   const words = {
     1: "START",
+    10: "CHECK", 11: "POINT",
     20: "MATCH", 21: "THEME", 22: "WORDS", 23: "GREEN", 24: "SHORT", 25: "RESET"
   };
   const sounds = {};
 
-  const availableLevels = [];
-  for(let lvl = 2; lvl <= 19; lvl++) availableLevels.push(lvl);
-  for(let i = availableLevels.length - 1; i > 0; i--){
-    const j = Math.floor(Math.random() * (i + 1));
-    [availableLevels[i], availableLevels[j]] = [availableLevels[j], availableLevels[i]];
+  const specialLevels = [3, 6, 9, 12, 15, 18];
+  const reservedLevels = [10, 11, ...specialLevels];
+
+  function shuffle(arr){
+    for(let i = arr.length - 1; i > 0; i--){
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
   }
-  const specialLevels = availableLevels.slice(0, 6).sort((a, b) => a - b);
 
   words[specialLevels[0]] = pickRandomFrom(findPatternMatches("QUACK", "G", ANSWER_WORDS));
   sounds[specialLevels[0]] = 'QUACK';
@@ -81,10 +85,26 @@ function buildLevelWords(){
   words[specialLevels[5]] = pickRandomFrom(findPatternMatches("BOING", "YGG", ANSWER_WORDS));
   sounds[specialLevels[5]] = 'BOING';
 
-  const literalWordLevels = availableLevels.slice(6, 12);
-  const literalWords = ["QUACK", "SWISH", "BLEEP", "VROOM", "WHIZZ", "BOING"];
-  literalWords.forEach((word, idx) => {
-    words[literalWordLevels[idx]] = word;
+  // QUACK/SWISH/BLEEP always land after the CHECK/POINT checkpoint (level 11);
+  // VROOM/WHIZZ/BOING always land before it.
+  const beforeCheckpointPool = [];
+  const afterCheckpointPool = [];
+  for(let lvl = 2; lvl <= 19; lvl++){
+    if(reservedLevels.includes(lvl)) continue;
+    if(lvl < 10) beforeCheckpointPool.push(lvl);
+    else if(lvl > 11) afterCheckpointPool.push(lvl);
+  }
+  shuffle(beforeCheckpointPool);
+  shuffle(afterCheckpointPool);
+
+  const beforeWords = ["VROOM", "WHIZZ", "BOING"];
+  beforeWords.forEach((word, idx) => {
+    words[beforeCheckpointPool[idx]] = word;
+  });
+
+  const afterWords = ["QUACK", "SWISH", "BLEEP"];
+  afterWords.forEach((word, idx) => {
+    words[afterCheckpointPool[idx]] = word;
   });
 
   for(let lvl = 2; lvl <= 19; lvl++){
@@ -111,26 +131,46 @@ function pickAnswer(){
 function currentWordSet(){
   return sixLetterMode ? WORD_SET_6 : WORD_SET;
 }
+let lastPlayedSound = null; // { type: 'row', row } or { type: 'effect', key }
+
+function playSoundByKey(key){
+  if(key === 'QUACK') return playQuack(ensureAudio());
+  if(key === 'SWISH') return playSwish(ensureAudio());
+  if(key === 'BLEEP') return playBleep(ensureAudio());
+  if(key === 'VROOM') return playVroom(ensureAudio());
+  if(key === 'WHIZZ') return playWhizz(ensureAudio());
+  if(key === 'BOING') return playBoing(ensureAudio());
+  return null;
+}
+
+// Locks input/replay until the given audio element finishes, so overlapping
+// sounds can't be triggered while one is already playing.
+function lockUntilAudioEnds(audioEl){
+  over = true;
+  const unlock = () => { over = false; };
+  audioEl.addEventListener('ended', unlock, { once: true });
+  audioEl.addEventListener('error', unlock, { once: true });
+  setTimeout(unlock, 5000); // safety net in case playback silently fails
+}
+
+// Same idea for the synthesized row-reveal sounds, which report their own duration.
+function lockForMs(durationMs){
+  over = true;
+  setTimeout(()=>{ over = false; }, durationMs);
+}
+
 function startLevel(){
   answer = pickAnswer();
   board = Array.from({length:ROWS}, ()=>({guess:"", results:null}));
   curRow = 0; curCol = 0; over = false;
+  lastPlayedSound = null;
   renderBoard();
   updateLevelDisplay();
   const soundKey = LEVEL_START_SOUNDS[level];
-  let levelSoundEl = null;
-  if(soundKey === 'QUACK') levelSoundEl = playQuack(ensureAudio());
-  else if(soundKey === 'SWISH') levelSoundEl = playSwish(ensureAudio());
-  else if(soundKey === 'BLEEP') levelSoundEl = playBleep(ensureAudio());
-  else if(soundKey === 'VROOM') levelSoundEl = playVroom(ensureAudio());
-  else if(soundKey === 'WHIZZ') levelSoundEl = playWhizz(ensureAudio());
-  else if(soundKey === 'BOING') levelSoundEl = playBoing(ensureAudio());
+  const levelSoundEl = playSoundByKey(soundKey);
   if(levelSoundEl){
-    over = true;
-    const unlock = () => { over = false; };
-    levelSoundEl.addEventListener('ended', unlock, { once: true });
-    levelSoundEl.addEventListener('error', unlock, { once: true });
-    setTimeout(unlock, 5000); // safety net in case playback silently fails
+    lastPlayedSound = { type: 'effect', key: soundKey };
+    lockUntilAudioEnds(levelSoundEl);
   }
 }
 let answer = pickAnswer();
@@ -290,6 +330,29 @@ function playFanfare(ctx){
     osc.connect(gain).connect(analyser);
     osc.start(t); osc.stop(t+0.45);
   });
+}
+function playCheckpoint(ctx){
+  // milestone bell — bright ascending chime with a shimmering overtone, marking CHECK+POINT reached
+  const t0 = ctx.currentTime;
+  [523.25, 783.99].forEach((freq, i) => {
+    const t = t0 + i * 0.14;
+    const osc = ctx.createOscillator(), gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(0.28, t + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.6);
+    osc.connect(gain).connect(analyser);
+    osc.start(t); osc.stop(t + 0.62);
+  });
+  const shimmer = ctx.createOscillator(), shimmerGain = ctx.createGain();
+  shimmer.type = 'sine';
+  shimmer.frequency.value = 1567.98;
+  shimmerGain.gain.setValueAtTime(0, t0 + 0.14);
+  shimmerGain.gain.linearRampToValueAtTime(0.12, t0 + 0.16);
+  shimmerGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.7);
+  shimmer.connect(shimmerGain).connect(analyser);
+  shimmer.start(t0 + 0.14); shimmer.stop(t0 + 0.72);
 }
 function playLose(ctx){
   const t0 = ctx.currentTime;
@@ -501,7 +564,11 @@ function renderBoard(){
       btn.className = 'replay-btn';
       btn.textContent = `🔁 replay sounds (press ${r+1})`;
       btn.title = `Press ${r+1} anytime to replay this row`;
-      btn.addEventListener('click', ()=> playRowSounds(r));
+      btn.addEventListener('click', ()=> {
+        if(over) return; // a sound is already playing — don't overlap it
+        lastPlayedSound = { type: 'row', row: r };
+        lockForMs(playRowSounds(r));
+      });
       replayWrap.appendChild(btn);
       boardEl.appendChild(replayWrap);
     }
@@ -636,7 +703,8 @@ function submitGuess(){
   board[curRow].results = results;
   renderBoard();
   announce(`Row ${curRow+1} submitted. Listen for the result.`);
-  playRowSounds(curRow);
+  lastPlayedSound = { type: 'row', row: curRow };
+  const revealDuration = playRowSounds(curRow);
 
   const won = results.every(r=>r==='correct');
   const finishedRow = curRow;
@@ -646,25 +714,28 @@ function submitGuess(){
   setTimeout(()=>{
     if(won){
       level++;
-      playFanfare(ensureAudio());
+      if(answer === 'POINT') playCheckpoint(ensureAudio());
+      else playFanfare(ensureAudio());
       announce(`Solved in ${finishedRow+1} ${finishedRow===0?'try':'tries'}. Level ${level} — starting a new word.`);
       setTimeout(()=> resetGame(), 900); // resetGame -> startLevel unlocks input
     } else if(curRow >= ROWS){
-      level = 1;
-      regenerateLevelWords();
       playLose(ensureAudio());
-      announce(`Out of guesses. The word was ${answer}. Back to level 1.`);
+      level = (level > 11) ? 10 : 1;
+      regenerateLevelWords();
+      announce(`Out of guesses. The word was ${answer}. Back to level ${level}.`);
       setTimeout(()=> resetGame(), 900); // resetGame -> startLevel unlocks input
     } else {
       over = false; // round continues, unlock for the next row
     }
-  }, 1400);
+  }, revealDuration + 200);
 }
 
 function playRowSounds(r){
   const ctx = ensureAudio();
   const results = board[r].results;
-  let cursor = ctx.currentTime + 0.05;
+  const GAP = 0.11; // pause between each letter's sound, so they're easier to tell apart
+  const start = ctx.currentTime;
+  let cursor = start + 0.05;
   for(let i=0;i<COLS;i++){
     const type = results[i];
     const t = tileEl(r,i);
@@ -678,8 +749,9 @@ function playRowSounds(r){
     if(type==='correct') dur = playCorrect(ctx,cursor);
     else if(type==='present') dur = playPresent(ctx,cursor);
     else dur = playAbsent(ctx,cursor);
-    cursor += dur;
+    cursor += dur + GAP;
   }
+  return (cursor - start) * 1000; // total playback duration in ms, for callers that need to wait it out
 }
 
 function updateLevelDisplay(){
@@ -703,10 +775,36 @@ function setBlackout(on){
 
 document.addEventListener('keydown', (e)=>{
   ensureAudio();
+  if(e.code === 'Space'){
+    e.preventDefault();
+    if(over) return; // a sound is already playing — don't overlap it
+    if(lastPlayedSound && lastPlayedSound.type === 'effect'){
+      const el = playSoundByKey(lastPlayedSound.key);
+      if(el) lockUntilAudioEnds(el);
+      announce('Replaying level sound effect.');
+    } else if(lastPlayedSound && lastPlayedSound.type === 'row'){
+      lockForMs(playRowSounds(lastPlayedSound.row));
+      announce(`Replaying row ${lastPlayedSound.row+1}.`);
+    } else {
+      let lastRow = -1;
+      for(let i=0;i<board.length;i++){ if(board[i].results) lastRow = i; }
+      if(lastRow !== -1){
+        lastPlayedSound = { type: 'row', row: lastRow };
+        lockForMs(playRowSounds(lastRow));
+        announce(`Replaying row ${lastRow+1}.`);
+      } else {
+        playError(ensureAudio());
+        announce('No guesses yet to replay.');
+      }
+    }
+    return;
+  }
   if(/^[1-6]$/.test(e.key)){
+    if(over) return; // a sound is already playing — don't overlap it
     const idx = parseInt(e.key, 10) - 1;
     if(board[idx] && board[idx].results){
-      playRowSounds(idx);
+      lastPlayedSound = { type: 'row', row: idx };
+      lockForMs(playRowSounds(idx));
       announce(`Replaying row ${idx+1}.`);
     } else {
       playError(ensureAudio());
